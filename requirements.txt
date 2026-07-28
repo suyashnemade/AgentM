@@ -1,0 +1,14 @@
+langchain
+langchain-groq
+langchain-google-genai
+langchain-openai
+langgraph
+langsmith
+pandas
+python-dotenv
+
+
+pydantic
+
+pandas 
+numpy
