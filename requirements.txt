@@ -6,9 +6,7 @@ langgraph
 langsmith
 pandas
 python-dotenv
-
-
 pydantic
-
-pandas 
 numpy
+streamlit
+tabulate
