@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import uuid
 import time
+import json
 
 from AgentM.workflow import workflow
 from AgentM.utils.utils import file_handler, metrics, load_csv_safely
@@ -30,8 +31,16 @@ st.markdown("""
         font-family: 'Inter', sans-serif;
     }
 
-    /* ── Hide default Streamlit clutter ── */
-    #MainMenu, footer, header {visibility: hidden;}
+    /* ── Hide default Streamlit clutter while keeping sidebar reopen button visible ── */
+    #MainMenu, footer { visibility: hidden; }
+    header, [data-testid="stHeader"] {
+        background: transparent !important;
+    }
+    [data-testid="collapsedControl"], [data-testid="stSidebarCollapseButton"] {
+        visibility: visible !important;
+        display: flex !important;
+        z-index: 999999 !important;
+    }
 
     /* ── Pipeline tracker ── */
     .pipeline-container {
@@ -224,6 +233,29 @@ st.markdown("""
         letter-spacing: 0.01em;
         transition: all 0.3s ease;
     }
+
+    /* ── Active Config Summary ── */
+    .active-config-card {
+        background: #F9FAFB;
+        border: 1px solid #E5E7EB;
+        border-radius: 12px;
+        padding: 0.85rem 1.25rem;
+        margin-bottom: 1.25rem;
+        font-size: 0.9rem;
+        color: #374151;
+        display: flex;
+        align-items: center;
+        gap: 1.5rem;
+        flex-wrap: wrap;
+    }
+    .config-tag {
+        background: #EEF2FF;
+        color: #4F46E5;
+        padding: 0.25rem 0.6rem;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 0.82rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -289,9 +321,13 @@ def render_pipeline_tracker(active_step_id, step_states=None):
 # ─────────────────────────────────────────────────────────────
 # Session State Init
 # ─────────────────────────────────────────────────────────────
+# Session State Init
+# ─────────────────────────────────────────────────────────────
 DEFAULTS = {
     "pipeline_phase": "upload",     # upload | running | human_review | complete | failed
     "thread_id": None,
+    "run_timestamp": None,
+    "active_user_instruction": "",
     "dataset_path": None,
     "step_states": {},
     "active_step": "upload",
@@ -307,13 +343,59 @@ for k, v in DEFAULTS.items():
         st.session_state[k] = v
 
 
+LOGS_DIR = "logs"
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+
+def save_run_log():
+    """Save or update current run log file in logs/."""
+    thread_id = st.session_state.get("thread_id")
+    if not thread_id:
+        return
+    log_file = os.path.join(LOGS_DIR, f"run_{thread_id}.json")
+    dataset_path = st.session_state.get("dataset_path", "")
+    dataset_name = os.path.basename(dataset_path) if dataset_path else "Dataset"
+    
+    run_data = {
+        "thread_id": thread_id,
+        "timestamp": st.session_state.get("run_timestamp", time.strftime("%Y-%m-%d %H:%M:%S")),
+        "dataset_name": dataset_name,
+        "user_instruction": st.session_state.get("active_user_instruction", ""),
+        "pipeline_phase": st.session_state.get("pipeline_phase", "upload"),
+        "logs": st.session_state.get("agent_logs", []),
+    }
+    try:
+        with open(log_file, "w", encoding="utf-8") as f:
+            json.dump(run_data, f, indent=2)
+    except Exception:
+        pass
+
+
+def load_all_run_logs():
+    """Load metadata of all saved run logs sorted by timestamp descending."""
+    runs = []
+    if os.path.exists(LOGS_DIR):
+        for fname in os.listdir(LOGS_DIR):
+            if fname.startswith("run_") and fname.endswith(".json"):
+                fpath = os.path.join(LOGS_DIR, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        runs.append(data)
+                except Exception:
+                    pass
+    runs.sort(key=lambda r: r.get("timestamp", ""), reverse=True)
+    return runs
+
+
 def log(icon, message):
-    """Append a timestamped log entry."""
+    """Append a timestamped log entry and persist."""
     st.session_state.agent_logs.append({
         "time": time.strftime("%H:%M:%S"),
         "icon": icon,
         "message": message,
     })
+    save_run_log()
 
 
 def set_step(step_id, state="active"):
@@ -337,59 +419,145 @@ st.markdown('<div class="hero-subtitle">Multi-agent AI pipeline for automated da
 
 
 # ─────────────────────────────────────────────────────────────
-# Pipeline Tracker (always visible)
+# Main Middle Area: Upload Dataset & Cleaning Instructions
 # ─────────────────────────────────────────────────────────────
+start_btn = False
+
+uploaded_file = st.session_state.get("main_uploaded_file")
+user_instruction = st.session_state.get("main_user_instruction", "")
+
+if st.session_state.pipeline_phase == "upload":
+    st.markdown('<div class="section-header">📥 Dataset & Cleaning Setup</div>', unsafe_allow_html=True)
+    
+    with st.container(border=True):
+        col_up, col_inst = st.columns([1, 1], gap="medium")
+        
+        with col_up:
+            st.markdown("##### 📂 Upload Dataset")
+            main_file_val = st.file_uploader(
+                "Upload a CSV file",
+                type=["csv"],
+                help="Drag & drop or click to browse",
+                key="main_uploaded_file",
+                label_visibility="collapsed",
+            )
+            if main_file_val is not None:
+                uploaded_file = main_file_val
+
+        with col_inst:
+            st.markdown("##### 🎯 Cleaning Instructions")
+            main_inst_val = st.text_area(
+                "Cleaning Instructions",
+                placeholder="e.g. Remove duplicates, fill missing ages with median, standardize column names...",
+                height=110,
+                key="main_user_instruction",
+                label_visibility="collapsed",
+            )
+            if main_inst_val:
+                user_instruction = main_inst_val
+
+        st.markdown("")
+        start_btn = st.button(
+            "🚀 Start Cleaning",
+            use_container_width=True,
+            disabled=(uploaded_file is None or st.session_state.pipeline_phase == "running"),
+            type="primary",
+            key="main_start_btn",
+        )
+
+else:
+    # Summary card when pipeline is running/review/complete
+    dataset_name = os.path.basename(st.session_state.dataset_path) if st.session_state.dataset_path else "Dataset"
+    active_inst = st.session_state.get("active_user_instruction", "") or user_instruction or "Standard Cleaning"
+    st.markdown(f'''
+    <div class="active-config-card">
+        <div>📁 <b>Active Dataset:</b> <span class="config-tag">{dataset_name}</span></div>
+        <div>🎯 <b>Instructions:</b> {active_inst}</div>
+    </div>
+    ''', unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────
+# Pipeline Tracker (Below Upload & Cleaning Instructions)
+# ─────────────────────────────────────────────────────────────
+st.markdown('<div class="section-header">⚙️ Pipeline Tracker</div>', unsafe_allow_html=True)
 render_pipeline_tracker(st.session_state.active_step, st.session_state.step_states)
 
 
 # ─────────────────────────────────────────────────────────────
-# Sidebar — Upload + Config
+# Sidebar — Log Viewer & Run History
 # ─────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### 📂 Dataset")
+    st.markdown("### 📋 Agent Logs & History")
     
-    uploaded_file = st.file_uploader(
-        "Upload a CSV file",
-        type=["csv"],
-        help="Drag & drop or click to browse",
-    )
-
-    user_instruction = st.text_area(
-        "🎯 Cleaning Instructions",
-        placeholder="e.g. Remove duplicates, fill missing ages with median, standardize column names...",
-        height=100,
-    )
-
-    start_btn = st.button(
-        "🚀 Start Cleaning",
-        use_container_width=True,
-        disabled=(uploaded_file is None or st.session_state.pipeline_phase == "running"),
-        type="primary",
-    )
-
-    st.divider()
-
-    # ── Agent Log ──
-    st.markdown("### 📋 Agent Log")
-    log_container = st.container(height=300)
-    with log_container:
-        if not st.session_state.agent_logs:
-            st.caption("Waiting for pipeline to start…")
-        else:
-            for entry in reversed(st.session_state.agent_logs):
-                st.markdown(
-                    f"`{entry['time']}` {entry['icon']} {entry['message']}"
-                )
-
     if st.session_state.pipeline_phase != "upload":
-        if st.button("🔄 Reset Pipeline", use_container_width=True):
+        if st.button("➕ Start New Cleaning Run", use_container_width=True, type="primary"):
             for k, v in DEFAULTS.items():
                 st.session_state[k] = v if not isinstance(v, (list, dict)) else type(v)()
             st.rerun()
+        st.divider()
+
+    st.markdown("##### 📜 Select Pipeline Run Log")
+    
+    all_runs = load_all_run_logs()
+    current_id = st.session_state.get("thread_id")
+    
+    options = []
+    run_options_map = {}
+    
+    if current_id:
+        curr_ds = os.path.basename(st.session_state.dataset_path) if st.session_state.dataset_path else "Current Dataset"
+        curr_phase = st.session_state.pipeline_phase
+        curr_label = f"⚡ Active Run — {curr_ds}"
+        options.append(curr_label)
+        run_options_map[curr_label] = {
+            "is_active": True,
+            "dataset_name": curr_ds,
+            "user_instruction": st.session_state.get("active_user_instruction", ""),
+            "pipeline_phase": curr_phase,
+            "logs": st.session_state.agent_logs,
+        }
+
+    for run in all_runs:
+        if current_id and run.get("thread_id") == current_id:
+            continue
+        ts = run.get("timestamp", "")
+        ds = run.get("dataset_name", "Dataset")
+        ph = run.get("pipeline_phase", "done")
+        label = f"🗓️ {ts} — {ds} ({ph})"
+        options.append(label)
+        run_options_map[label] = run
+
+    if not options:
+        st.caption("No log history saved yet.")
+    else:
+        selected_option = st.selectbox(
+            "Select Run",
+            options=options,
+            index=0,
+            key="run_log_selector",
+            label_visibility="collapsed",
+        )
+        
+        selected_run = run_options_map.get(selected_option)
+        if selected_run:
+            st.markdown(f"**Dataset:** `{selected_run.get('dataset_name', 'N/A')}`")
+            st.markdown(f"**Instructions:** {selected_run.get('user_instruction') or '*Standard cleaning*'}")
+            st.markdown(f"**Status:** `{selected_run.get('pipeline_phase', 'unknown')}`")
+            
+            st.markdown("---")
+            log_container = st.container(height=320)
+            with log_container:
+                logs_to_show = selected_run.get("logs", [])
+                if not logs_to_show:
+                    st.caption("No log entries recorded for this run.")
+                else:
+                    for entry in reversed(logs_to_show):
+                        st.markdown(f"`{entry['time']}` {entry['icon']} {entry['message']}")
 
 
 # ─────────────────────────────────────────────────────────────
-# PHASE: Upload
+# PHASE: Upload Preview
 # ─────────────────────────────────────────────────────────────
 if st.session_state.pipeline_phase == "upload":
     if uploaded_file and not start_btn:
@@ -426,21 +594,6 @@ if st.session_state.pipeline_phase == "upload":
         except Exception as e:
             st.error(f"Could not preview file: {e}")
 
-    elif not uploaded_file:
-        st.markdown("")
-        st.markdown("")
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            st.markdown("""
-            <div style="text-align:center; padding:3rem 2rem; border:2px dashed #D1D5DB; border-radius:20px; background:#FFFFFF; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
-                <div style="font-size:3rem; margin-bottom:0.5rem;">📤</div>
-                <div style="font-size:1.1rem; font-weight:600; color:#374151;">Upload a CSV to get started</div>
-                <div style="font-size:0.85rem; color:#6B7280; margin-top:0.5rem;">
-                    Use the sidebar to upload your dataset and provide cleaning instructions
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
 
 # ─────────────────────────────────────────────────────────────
 # PHASE: Start Pipeline
@@ -455,6 +608,8 @@ if start_btn and uploaded_file:
 
     st.session_state.dataset_path = dataset_path
     st.session_state.thread_id = str(uuid.uuid4())
+    st.session_state.run_timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state.active_user_instruction = user_instruction or ""
     st.session_state.pipeline_phase = "running"
     st.session_state.agent_logs = []
     st.session_state.retry_count = 0

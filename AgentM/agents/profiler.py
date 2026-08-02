@@ -33,7 +33,7 @@ def profiler(state: DataCleanState):
     instruction_text = f"\n USER INSTRUCTIONS:\n'{user_instructions}'" if user_instructions else ""
 
     prompt = f"""
-You are a Senior Data Cleaning Agent.
+You are a Senior Data Engineer specialized in data cleaning and transformation.
 
 DATASET PROFILE:
 {data_profile}

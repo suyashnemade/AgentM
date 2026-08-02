@@ -1,5 +1,6 @@
 from langgraph.graph import END, START, StateGraph
 from AgentM.agents.profiler import profiler
+from AgentM.agents.planer import planer
 from AgentM.agents.coder import coder
 from AgentM.agents.reviewer import reviewer
 from AgentM.agents.code_executer import code_execute
@@ -44,13 +45,14 @@ graph = StateGraph(DataCleanState)
 
 # Add all worker nodes + human review gate
 graph.add_node("profile", profiler)
+graph.add_node("planer", planer)
 graph.add_node("coder", coder)
 graph.add_node("ai_review", reviewer)
 graph.add_node("human_review", human_review)
 graph.add_node("code_execute", code_execute)
 
 # Define the flow
-graph.set_entry_point("profile")
+graph.add_edge(START,"profile")
 graph.add_edge("profile", "coder")
 graph.add_edge("coder", "ai_review")
 
